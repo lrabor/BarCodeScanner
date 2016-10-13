@@ -15,6 +15,18 @@ import java.io.BufferedReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 
+import java.io.BufferedInputStream;
+import java.net.URL;
+import java.net.URLConnection;
+
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+
+import android.net.Uri;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+
 import org.apache.http.HttpEntity;
 import org.apache.http.HttpResponse;
 import org.apache.http.StatusLine;
@@ -38,6 +50,8 @@ public class MainActivity extends Activity
     private LinearLayout starLayout;
     private ImageView thumbView;
     private ImageView[] starViews;
+
+    private Bitmap thumbImg;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -67,6 +81,29 @@ public class MainActivity extends Activity
         for(int s=0; s<starViews.length; s++){
             starViews[s]=new ImageView(this);
         }
+
+        if (savedInstanceState != null){
+            authorText.setText(savedInstanceState.getString("author"));
+            titleText.setText(savedInstanceState.getString("title"));
+            descriptionText.setText(savedInstanceState.getString("description"));
+            dateText.setText(savedInstanceState.getString("date"));
+            ratingCountText.setText(savedInstanceState.getString("ratings"));
+            int numStars = savedInstanceState.getInt("stars");//zero if null
+            for(int s=0; s<numStars; s++){
+                starViews[s].setImageResource(R.drawable.star);
+                starLayout.addView(starViews[s]);
+            }
+            starLayout.setTag(numStars);
+            thumbImg = (Bitmap)savedInstanceState.getParcelable("thumbPic");
+            thumbView.setImageBitmap(thumbImg);
+            previewBtn.setTag(savedInstanceState.getString("isbn"));
+
+            if(savedInstanceState.getBoolean("isEmbed")) previewBtn.setEnabled(true);
+            else previewBtn.setEnabled(false);
+            if(savedInstanceState.getInt("isLink")==View.VISIBLE) linkBtn.setVisibility(View.VISIBLE);
+            else linkBtn.setVisibility(View.GONE);
+            previewBtn.setVisibility(View.VISIBLE);
+        }
     }
 
     public void onClick(View v){
@@ -75,6 +112,19 @@ public class MainActivity extends Activity
             //scan
             IntentIntegrator scanIntegrator = new IntentIntegrator(this);
             scanIntegrator.initiateScan();
+        } else if(v.getId()==R.id.link_btn){
+            //get the url tag
+            String tag = (String)v.getTag();
+            //launch the url
+            Intent webIntent = new Intent(Intent.ACTION_VIEW);
+            webIntent.setData(Uri.parse(tag));
+            startActivity(webIntent);
+        } else if(v.getId()==R.id.preview_btn){
+            String tag = (String)v.getTag();
+            //launch preview
+            Intent intent = new Intent(this, EmbeddedBook.class);
+            intent.putExtra("isbn", tag);
+            startActivity(intent);
         }
     }
 
@@ -90,8 +140,12 @@ public class MainActivity extends Activity
 
             if(scanContent!=null && scanFormat!=null && scanFormat.equalsIgnoreCase("EAN_13")){
                 //book search
+                previewBtn.setTag(scanContent);
+
                 String bookSearchString = "https://www.googleapis.com/books/v1/volumes?"+
                         "q=isbn:"+scanContent+"&key=AIzaSyBGMQBdrDNefCc-mgMqtnleOctwL5B0JLk";
+
+                new GetBookInfo().execute(bookSearchString);
             }
             else{
                 Toast toast = Toast.makeText(getApplicationContext(),
@@ -107,6 +161,22 @@ public class MainActivity extends Activity
                     "No book scan data received!", Toast.LENGTH_SHORT);
             toast.show();
         }
+
+    }
+
+    protected void onSaveInstanceState(Bundle savedBundle) {
+        savedBundle.putString("title", ""+titleText.getText());
+        savedBundle.putString("author", ""+authorText.getText());
+        savedBundle.putString("description", ""+descriptionText.getText());
+        savedBundle.putString("date", ""+dateText.getText());
+        savedBundle.putString("ratings", ""+ratingCountText.getText());
+        savedBundle.putParcelable("thumbPic", thumbImg);
+        if(starLayout.getTag()!=null)
+            savedBundle.putInt("stars", Integer.parseInt(starLayout.getTag().toString()));
+        savedBundle.putBoolean("isEmbed", previewBtn.isEnabled());
+        savedBundle.putInt("isLink", linkBtn.getVisibility());
+        if(previewBtn.getTag()!=null)
+            savedBundle.putString("isbn", previewBtn.getTag().toString());
     }
 
     private class GetBookInfo extends AsyncTask<String, Void, String> {
@@ -143,6 +213,150 @@ public class MainActivity extends Activity
             }
 
             return bookBuilder.toString();
+        }
+
+        protected void onPostExecute(String result) {
+            //parse search results
+            try{
+                //parse results
+                previewBtn.setVisibility(View.VISIBLE);
+
+                JSONObject resultObject = new JSONObject(result);
+                JSONArray bookArray = resultObject.getJSONArray("items");
+
+                JSONObject bookObject = bookArray.getJSONObject(0);
+
+                JSONObject volumeObject = bookObject.getJSONObject("volumeInfo");
+
+                try{
+                    titleText.setText("TITLE: "+volumeObject.getString("title")); }
+                catch(JSONException jse){
+                    titleText.setText("");
+                    jse.printStackTrace();
+                }
+
+                StringBuilder authorBuild = new StringBuilder("");
+                try{
+                    JSONArray authorArray = volumeObject.getJSONArray("authors");
+                    for(int a=0; a<authorArray.length(); a++){
+                        if(a>0) authorBuild.append(", ");
+                        authorBuild.append(authorArray.getString(a));
+                    }
+                    authorText.setText("AUTHOR(S): "+authorBuild.toString());
+                }
+                catch(JSONException jse){
+                    authorText.setText("");
+                    jse.printStackTrace();
+                }
+
+                try{ dateText.setText("PUBLISHED: "+volumeObject.getString("publishedDate")); }
+                catch(JSONException jse){
+                    dateText.setText("");
+                    jse.printStackTrace();
+                }
+
+                try{ descriptionText.setText("DESCRIPTION: "+volumeObject.getString("description")); }
+                catch(JSONException jse){
+                    descriptionText.setText("");
+                    jse.printStackTrace();
+                }
+
+                try{
+                    //set stars
+                    double decNumStars = Double.parseDouble(volumeObject.getString("averageRating"));
+                    int numStars = (int)decNumStars;
+
+                    starLayout.setTag(numStars);
+                    starLayout.removeAllViews();
+
+                    for(int s=0; s<numStars; s++){
+                        starViews[s].setImageResource(R.drawable.star);
+                        starLayout.addView(starViews[s]);
+                    }
+                }
+                catch(JSONException jse){
+                    starLayout.removeAllViews();
+                    jse.printStackTrace();
+                }
+
+                try{ ratingCountText.setText(" - "+volumeObject.getString("ratingsCount")+" ratings"); }
+                catch(JSONException jse){
+                    ratingCountText.setText("");
+                    jse.printStackTrace();
+                }
+
+                try{
+                    boolean isEmbeddable = Boolean.parseBoolean
+                            (bookObject.getJSONObject("accessInfo").getString("embeddable"));
+                    if(isEmbeddable) previewBtn.setEnabled(true);
+                    else previewBtn.setEnabled(false);
+                }
+                catch(JSONException jse){
+                    previewBtn.setEnabled(false);
+                    jse.printStackTrace();
+                }
+
+                try{
+                    linkBtn.setTag(volumeObject.getString("infoLink"));
+                    linkBtn.setVisibility(View.VISIBLE);
+                }
+                catch(JSONException jse){
+                    linkBtn.setVisibility(View.GONE);
+                    jse.printStackTrace();
+                }
+
+                try{
+                    JSONObject imageInfo = volumeObject.getJSONObject("imageLinks");
+                    new GetBookThumb().execute(imageInfo.getString("smallThumbnail"));
+                }
+                catch(JSONException jse){
+                    thumbView.setImageBitmap(null);
+                    jse.printStackTrace();
+                }
+            }
+            catch (Exception e) {
+                //no result
+                e.printStackTrace();
+                titleText.setText("NOT FOUND");
+                authorText.setText("");
+                descriptionText.setText("");
+                dateText.setText("");
+                starLayout.removeAllViews();
+                ratingCountText.setText("");
+                thumbView.setImageBitmap(null);
+                previewBtn.setVisibility(View.GONE);
+            }
+        }
+    }
+
+    private class GetBookThumb extends AsyncTask<String, Void, String> {
+        //get thumbnail
+        @Override
+        protected String doInBackground(String... thumbURLs) {
+            //attempt to download image
+            try{
+                //try to download
+                URL thumbURL = new URL(thumbURLs[0]);
+                URLConnection thumbConn = thumbURL.openConnection();
+                thumbConn.connect();
+
+                InputStream thumbIn = thumbConn.getInputStream();
+                BufferedInputStream thumbBuff = new BufferedInputStream(thumbIn);
+
+                thumbImg = BitmapFactory.decodeStream(thumbBuff);
+
+                thumbBuff.close();
+                thumbIn.close();
+            }
+            catch(Exception e) {
+                e.printStackTrace();
+            }
+
+            return "";
+        }
+
+        protected void onPostExecute(String result) {
+            thumbView.setImageBitmap(thumbImg);
         }
     }
 }
